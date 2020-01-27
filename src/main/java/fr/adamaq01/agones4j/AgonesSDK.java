@@ -3,7 +3,7 @@ package fr.adamaq01.agones4j;
 import agones.dev.sdk.SDKGrpc;
 import agones.dev.sdk.Sdk;
 import io.grpc.ManagedChannel;
-import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
 
 import java.time.Duration;
@@ -15,21 +15,55 @@ import java.util.function.Consumer;
  */
 public class AgonesSDK {
 
+    private static final int DEFAULT_PORT;
+    private static final String DEFAULT_ADDRESS;
+
+    static {
+        String sPort = System.getenv("AGONES_SDK_GRPC_PORT");
+        DEFAULT_PORT = sPort == null || sPort.isEmpty() ? 9357 : Integer.parseInt(sPort);
+
+        DEFAULT_ADDRESS = "localhost";
+    }
+
     private int port;
-    private String address = "localhost";
+    private String address;
     private ManagedChannel managedChannel;
     private SDKGrpc.SDKFutureStub futureStub;
     private SDKGrpc.SDKStub stub;
 
     public AgonesSDK() {
-        String sPort = System.getenv("AGONES_SDK_GRPC_PORT");
-        this.port = sPort == null || sPort.isEmpty() ? 9357 : Integer.parseInt(sPort);
-        this.managedChannel = NettyChannelBuilder
+        this(DEFAULT_ADDRESS, DEFAULT_PORT);
+    }
+
+    public AgonesSDK(int port) {
+        this(DEFAULT_ADDRESS, port);
+    }
+
+    public AgonesSDK(String address) {
+        this(address, DEFAULT_PORT);
+    }
+
+    public AgonesSDK(String address, int port) {
+        this.address = address;
+        this.port = port;
+        this.managedChannel = ManagedChannelBuilder
                 .forAddress(this.address, this.port)
                 .keepAliveTimeout(30, TimeUnit.SECONDS)
                 .build();
         this.futureStub = SDKGrpc.newFutureStub(this.managedChannel).withWaitForReady();
         this.stub = SDKGrpc.newStub(this.managedChannel).withWaitForReady();
+    }
+
+    public String getAddress() {
+        return address;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    public ManagedChannel getManagedChannel() {
+        return managedChannel;
     }
 
     // Marks the Game Server as ready to receive connections
@@ -79,7 +113,7 @@ public class AgonesSDK {
                 .thenApply(empty -> true).exceptionally(throwable -> false);
     }
 
-    // Set a Annotation value on the backing Gameserver record that is stored in Kubernetes
+    // Set a Annotation value on the backing GameServer record that is stored in Kubernetes
     public CompletableFuture<Boolean> setAnnotation(String key, String value) {
         return makeCompletableFuture(this.futureStub.setAnnotation(Sdk.KeyValue.newBuilder().setKey(key).setValue(value).build()))
                 .thenApply(empty -> true).exceptionally(throwable -> false);
