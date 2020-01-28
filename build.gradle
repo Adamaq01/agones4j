@@ -1,11 +1,13 @@
 plugins {
     id 'java'
+    id 'maven-publish'
 }
 
 group 'fr.adamaq01'
 version '0.0.1'
 
-sourceCompatibility = 1.8
+sourceCompatibility = '1.8'
+targetCompatibility = '1.8'
 
 sourceSets {
     main {
@@ -26,4 +28,12 @@ dependencies {
     compile 'io.grpc:grpc-netty-shaded:1.26.0'
     compile 'io.grpc:grpc-protobuf:1.26.0'
     compile 'io.grpc:grpc-stub:1.26.0'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
 }
