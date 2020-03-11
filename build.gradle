@@ -6,32 +6,10 @@ plugins {
 group 'fr.adamaq01'
 version '0.0.1'
 
-sourceCompatibility = '1.8'
-targetCompatibility = '1.8'
-
-sourceSets {
-    main {
-        java {
-            srcDir 'src/main/java'
-        }
-        resources {
-            srcDir 'src/main/resources'
-        }
-    }
-}
-
 repositories {
     mavenCentral()
 }
 
 dependencies {
     compile 'com.konghq:unirest-java:3.4.01'
-}
-
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java
-        }
-    }
 }
