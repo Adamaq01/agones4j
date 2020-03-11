@@ -1,13 +1,23 @@
 package fr.adamaq01.agones4j;
 
-import agones.dev.sdk.SDKGrpc;
-import agones.dev.sdk.Sdk;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
-import io.grpc.stub.StreamObserver;
+import kong.unirest.HttpMethod;
+import kong.unirest.HttpRequestWithBody;
+import kong.unirest.HttpResponse;
+import kong.unirest.Unirest;
+import kong.unirest.json.JSONObject;
+import org.apache.http.impl.nio.client.CloseableHttpAsyncClient;
+import org.apache.http.impl.nio.client.HttpAsyncClients;
+import org.apache.http.nio.IOControl;
+import org.apache.http.nio.client.methods.AsyncCharConsumer;
+import org.apache.http.nio.client.methods.HttpAsyncMethods;
+import org.apache.http.protocol.HttpContext;
 
+import java.io.IOException;
+import java.nio.CharBuffer;
 import java.time.Duration;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
@@ -19,17 +29,14 @@ public class AgonesSDK {
     private static final String DEFAULT_ADDRESS;
 
     static {
-        String sPort = System.getenv("AGONES_SDK_GRPC_PORT");
-        DEFAULT_PORT = sPort == null || sPort.isEmpty() ? 9357 : Integer.parseInt(sPort);
+        String sPort = System.getenv("AGONES_SDK_HTTP_PORT");
+        DEFAULT_PORT = sPort == null || sPort.isEmpty() ? 9358 : Integer.parseInt(sPort);
 
         DEFAULT_ADDRESS = "localhost";
     }
 
     private int port;
     private String address;
-    private ManagedChannel managedChannel;
-    private SDKGrpc.SDKFutureStub futureStub;
-    private SDKGrpc.SDKStub stub;
 
     public AgonesSDK() {
         this(DEFAULT_ADDRESS, DEFAULT_PORT);
@@ -46,12 +53,10 @@ public class AgonesSDK {
     public AgonesSDK(String address, int port) {
         this.address = address;
         this.port = port;
-        this.managedChannel = ManagedChannelBuilder
-                .forAddress(this.address, this.port)
-                .keepAliveTimeout(30, TimeUnit.SECONDS)
-                .build();
-        this.futureStub = SDKGrpc.newFutureStub(this.managedChannel).withWaitForReady();
-        this.stub = SDKGrpc.newStub(this.managedChannel).withWaitForReady();
+        Unirest.config()
+                .automaticRetries(true)
+                .socketTimeout(Math.toIntExact(TimeUnit.SECONDS.toMillis(30)))
+                .connectTimeout(Math.toIntExact(TimeUnit.SECONDS.toMillis(30)));
     }
 
     public String getAddress() {
@@ -62,107 +67,118 @@ public class AgonesSDK {
         return port;
     }
 
-    public ManagedChannel getManagedChannel() {
-        return managedChannel;
-    }
-
     // Marks the Game Server as ready to receive connections
     public CompletableFuture<Boolean> ready() {
-        return makeCompletableFuture(this.futureStub.ready(Sdk.Empty.getDefaultInstance()))
-                .thenApply(empty -> true).exceptionally(throwable -> false);
+        return request(HttpMethod.POST, "/ready")
+                .body("{}")
+                .asEmptyAsync()
+                .thenApply(HttpResponse::isSuccess);
     }
 
-    // Allocate the Game Server
-    public CompletableFuture<Boolean> allocate() {
-        return makeCompletableFuture(this.futureStub.allocate(Sdk.Empty.getDefaultInstance()))
-                .thenApply(empty -> true).exceptionally(throwable -> false);
+    // Sends a ping to the health check to indicate that this server is healthy
+    public CompletableFuture<Boolean> health() {
+        return request(HttpMethod.POST, "/health")
+                .body("{}")
+                .asEmptyAsync()
+                .thenApply(HttpResponse::isSuccess);
     }
 
     // Marks the Game Server as ready to shutdown
     public CompletableFuture<Boolean> shutdown() {
-        return makeCompletableFuture(this.futureStub.shutdown(Sdk.Empty.getDefaultInstance()))
-                .thenApply(empty -> true).exceptionally(throwable -> false);
-    }
-
-    // TODO
-    // Sends a ping to the health check to indicate that this server is healthy
-    public CompletableFuture<Boolean> health() {
-        CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
-        this.stub.health(new StreamObserver<Sdk.Empty>() {
-            @Override
-            public void onNext(Sdk.Empty value) {
-                System.out.println("Hey");
-            }
-
-            @Override
-            public void onError(Throwable t) {
-                completableFuture.completeExceptionally(t);
-            }
-
-            @Override
-            public void onCompleted() {
-                completableFuture.complete(true);
-            }
-        });
-        return completableFuture.exceptionally(throwable -> false);
+        return request(HttpMethod.POST, "/shutdown")
+                .body("{}")
+                .asEmptyAsync()
+                .thenApply(HttpResponse::isSuccess);
     }
 
     // Set a Label value on the backing GameServer record that is stored in Kubernetes
     public CompletableFuture<Boolean> setLabel(String key, String value) {
-        return makeCompletableFuture(this.futureStub.setLabel(Sdk.KeyValue.newBuilder().setKey(key).setValue(value).build()))
-                .thenApply(empty -> true).exceptionally(throwable -> false);
+        return request(HttpMethod.PUT, "/metadata/label")
+                .body(String.format("{\"key\": \"%s\", \"value\": \"%s\"}", key, value))
+                .asEmptyAsync()
+                .thenApply(HttpResponse::isSuccess);
     }
 
     // Set a Annotation value on the backing GameServer record that is stored in Kubernetes
     public CompletableFuture<Boolean> setAnnotation(String key, String value) {
-        return makeCompletableFuture(this.futureStub.setAnnotation(Sdk.KeyValue.newBuilder().setKey(key).setValue(value).build()))
-                .thenApply(empty -> true).exceptionally(throwable -> false);
+        return request(HttpMethod.PUT, "/metadata/annotation")
+                .body(String.format("{\"key\": \"%s\", \"value\": \"%s\"}", key, value))
+                .asEmptyAsync()
+                .thenApply(HttpResponse::isSuccess);
     }
 
     // Returns most of the backing GameServer configuration and Status
-    public CompletableFuture<Sdk.GameServer> getGameServer() {
-        return makeCompletableFuture(this.futureStub.getGameServer(Sdk.Empty.getDefaultInstance()));
+    public CompletableFuture<GameServer> gameServer() {
+        return request(HttpMethod.GET, "/gameserver")
+                .asJsonAsync()
+                .thenApply(response -> GameServer.fromJson(response.getBody().getObject()));
+    }
+
+    // Watch the backing GameServer configuration on updated
+    public Thread watchGameServer(Consumer<GameServer> consumer) {
+        Thread thread = new Thread(() -> {
+            CloseableHttpAsyncClient httpClient = HttpAsyncClients.createMinimal();
+            try {
+                httpClient.start();
+                httpClient.execute(HttpAsyncMethods.createGet("http://" + address + ":" + port + "/watch/gameserver"), new GameServerWatcherConsumer(consumer), null).get();
+            } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    httpClient.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
+        thread.start();
+
+        return thread;
+    }
+
+    private static class GameServerWatcherConsumer extends AsyncCharConsumer<Void> {
+
+        private Consumer<GameServer> consumer;
+
+        public GameServerWatcherConsumer(Consumer<GameServer> consumer) {
+            this.consumer = consumer;
+        }
+
+        @Override
+        protected void onCharReceived(CharBuffer buf, IOControl ioctrl) {
+            consumer.accept(GameServer.fromJson(new JSONObject(buf.toString()).getJSONObject("result")));
+        }
+
+        @Override
+        protected void onResponseReceived(org.apache.http.HttpResponse response) {
+        }
+
+        @Override
+        protected Void buildResult(HttpContext context) {
+            return null;
+        }
     }
 
     // Reserve marks the Game Server as Reserved for a given duration, at which point
     // it will return the GameServer to a Ready state.
     // Do note, the smallest unit available in the Duration argument is a second.
     public CompletableFuture<Boolean> reserve(Duration duration) {
-        return makeCompletableFuture(this.futureStub.reserve(Sdk.Duration.newBuilder().setSeconds(duration.getSeconds()).build()))
-                .thenApply(empty -> true).exceptionally(throwable -> false);
+        return request(HttpMethod.POST, "/reserve")
+                .body(String.format("{\"seconds\": \"%s\"}", duration.getSeconds()))
+                .asEmptyAsync()
+                .thenApply(HttpResponse::isSuccess);
     }
 
-    // Watch the backing GameServer configuration on updated
-    public CompletableFuture<Boolean> watchGameServer(Consumer<Sdk.GameServer> consumer) {
-        CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
-        this.stub.watchGameServer(Sdk.Empty.getDefaultInstance(), new StreamObserver<Sdk.GameServer>() {
-            @Override
-            public void onNext(Sdk.GameServer value) {
-                consumer.accept(value);
-            }
-
-            @Override
-            public void onError(Throwable t) {
-                completableFuture.completeExceptionally(t);
-            }
-
-            @Override
-            public void onCompleted() {
-                completableFuture.complete(true);
-            }
-        });
-        return completableFuture.exceptionally(throwable -> false);
+    // Allocate the Game Server
+    public CompletableFuture<Boolean> allocate() {
+        return request(HttpMethod.POST, "/allocate")
+                .body("{}")
+                .asEmptyAsync()
+                .thenApply(HttpResponse::isSuccess);
     }
 
-    private static <T> CompletableFuture<T> makeCompletableFuture(Future<T> future) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                return future.get();
-            } catch (ExecutionException e) {
-                throw new CompletionException(e.getCause());
-            } catch (InterruptedException e) {
-                throw new CompletionException(e);
-            }
-        });
+    private HttpRequestWithBody request(HttpMethod method, String path) {
+        return Unirest.request(method.name(), "http://" + address + ":" + port + path).header("Content-Type", "application/json");
     }
 }
